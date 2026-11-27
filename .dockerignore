@@ -1,0 +1,9 @@
+.git
+.gitignore
+target/
+helm/
+Jenkinsfile*
+README.md
+.vscode/
+.idea/
+*.iml
