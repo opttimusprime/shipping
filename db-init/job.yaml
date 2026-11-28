@@ -1,0 +1,102 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shipping-db-init
+  namespace: mysql
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: shipping-db-init
+    spec:
+      serviceAccountName: shipping-db-init-sa
+      restartPolicy: Never
+
+      initContainers:
+        - name: download-sql
+          image: amazon/aws-cli:2.17.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "Downloading master-data.sql..."
+              aws s3 cp \
+                s3://roboshop-tf-state-optimusprime/artifacts/shipping/db/master-data.sql \
+                /sql/master-data.sql
+
+              echo "Downloading app-user.sql..."
+              aws s3 cp \
+                s3://roboshop-tf-state-optimusprime/artifacts/shipping/db/app-user.sql \
+                /sql/app-user.sql
+
+              echo "SQL files downloaded successfully."
+              ls -lh /sql
+
+          volumeMounts:
+            - name: sql-files
+              mountPath: /sql
+
+      containers:
+        - name: mysql-init
+          image: mysql:5.7
+
+          env:
+            - name: MYSQL_HOST
+              value: mysql.mysql.svc.cluster.local
+
+            - name: MYSQL_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "Checking MySQL connectivity..."
+              mysql -h "$MYSQL_HOST" -u root \
+                -e "SELECT 1;"
+
+              echo "Checking whether cities database exists..."
+              DB_EXISTS=$(mysql -h "$MYSQL_HOST" -u root -N \
+                -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='cities';")
+
+              if [ "$DB_EXISTS" -ne 0 ]; then
+                echo "ERROR: cities database already exists."
+                echo "Stopping to prevent accidental data loss."
+                exit 1
+              fi
+
+              echo "Importing master-data.sql..."
+              mysql -h "$MYSQL_HOST" -u root \
+                < /sql/master-data.sql
+
+              echo "Creating shipping application user..."
+              mysql -h "$MYSQL_HOST" -u root \
+                < /sql/app-user.sql
+
+              echo "Verifying database tables..."
+              mysql -h "$MYSQL_HOST" -u root \
+                -e "SHOW TABLES FROM cities;"
+
+              echo "Verifying record counts..."
+              mysql -h "$MYSQL_HOST" -u root \
+                -e "SELECT COUNT(*) FROM cities.cities;
+                    SELECT COUNT(*) FROM cities.codes;"
+
+              echo "Shipping database initialization completed."
+
+          volumeMounts:
+            - name: sql-files
+              mountPath: /sql
+              readOnly: true
+
+      volumes:
+        - name: sql-files
+          emptyDir: {}
